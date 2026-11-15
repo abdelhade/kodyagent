@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Kody Print Agent</title>
+    <link rel="stylesheet" href="/src/styles.css" />
+    <script type="module" src="/src/main.ts" defer></script>
+  </head>
+  <body>
+    <main class="wrap">
+      <header class="head">
+        <div>
+          <h1>وكيل الطباعة</h1>
+          <p class="sub">إعداد الطابعات المحلية والاتصال بكودي</p>
+        </div>
+        <div id="agentBadge" class="badge">المنفذ 17890</div>
+      </header>
+
+      <section class="card">
+        <h2>الاتصال بكودي</h2>
+        <label class="lbl" for="serverUrl">رابط السيرفر</label>
+        <div class="row">
+          <input id="serverUrl" type="url" placeholder="http://192.168.1.10/kody" />
+          <button type="button" id="btnTest" class="btn">اختبار اتصال</button>
+        </div>
+        <p id="connMsg" class="msg">—</p>
+      </section>
+
+      <section class="card">
+        <h2>الطابعات</h2>
+        <div class="row tight">
+          <button type="button" id="btnRefreshPrinters" class="btn ghost">تحديث قائمة الطابعات</button>
+        </div>
+
+        <label class="lbl" for="mainPrinter">الطابعة العامة (فواتير)</label>
+        <select id="mainPrinter"></select>
+
+        <label class="lbl" for="extraPrinter">طابعة إضافية (نسخة ثانية — اختياري)</label>
+        <select id="extraPrinter"></select>
+
+        <h3 class="h3">طابعات المجموعات</h3>
+        <p class="hint">بعد نجاح اختبار الاتصال تظهر مجموعات الأصناف من كودي</p>
+        <div id="groupsBox" class="groups"></div>
+      </section>
+
+      <footer class="foot">
+        <button type="button" id="btnSave" class="btn primary">حفظ الإعدادات</button>
+        <span id="saveMsg" class="msg"></span>
+      </footer>
+    </main>
+  </body>
+</html>
