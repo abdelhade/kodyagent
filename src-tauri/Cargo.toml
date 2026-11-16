@@ -1,6 +1,6 @@
 [package]
 name = "print-agent"
-version = "0.1.0"
+version = "1.2.0"
 description = "Kody local print agent"
 authors = ["kody"]
 edition = "2021"
@@ -24,6 +24,10 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 dirs = "6"
 parking_lot = "0.12"
 uuid = { version = "1", features = ["v4"] }
+tokio-tungstenite = "0.26"
+futures-util = "0.3"
+base64 = "0.22"
+once_cell = "1"
 
 [profile.release]
 codegen-units = 1

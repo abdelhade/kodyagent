@@ -1,16 +1,22 @@
-use crate::printers::{get_default_printer, set_default_printer};
+use crate::cdp_print;
+use crate::printers::{get_default_printer, print_pdf_to_printer, set_default_printer};
 use crate::settings::AgentSettings;
 use serde::{Deserialize, Serialize};
+use std::fs;
 use std::time::Duration;
-use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
-use uuid::Uuid;
+use tauri::{AppHandle, Emitter};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PrintJob {
     /// receipt | prep | extra | custom
     #[serde(default = "default_job_type")]
     pub r#type: String,
+    /// قديم: رابط صفحة — يُستخدم فقط لو مفيش html
+    #[serde(default)]
     pub url: String,
+    /// HTML جاهز من السيرفر (المسار الأساسي)
+    #[serde(default)]
+    pub html: Option<String>,
     /// اختياري: رقم مجموعة الأصناف لبون التحضير
     #[serde(default)]
     pub group_id: Option<i64>,
@@ -26,6 +32,8 @@ fn default_job_type() -> String {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PrintRequest {
     pub jobs: Vec<PrintJob>,
+    #[serde(default)]
+    pub cookies: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -68,38 +76,50 @@ pub async fn run_jobs(app: AppHandle, settings: AgentSettings, req: PrintRequest
     let previous_default = get_default_printer();
     let mut printed = 0usize;
     let mut errors: Vec<String> = Vec::new();
+    let mut last_printer = String::new();
+    let cookies = req
+        .cookies
+        .as_ref()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
 
     for job in req.jobs {
         let printer = resolve_printer(&settings, &job);
         if printer.trim().is_empty() {
-            // طابعة إضافية غير مضبوطة = تجاهل بدون خطأ
             if job.r#type == "extra" {
                 continue;
             }
-            errors.push(format!(
-                "لا توجد طابعة معيّنة لمهمة {}",
-                job.r#type
-            ));
+            errors.push(format!("لا توجد طابعة معيّنة لمهمة {}", job.r#type));
             continue;
         }
 
-        match print_to_printer(&app, &job, &printer).await {
+        if !printer.eq_ignore_ascii_case(&last_printer) {
+            if let Err(e) = set_default_printer(&printer) {
+                errors.push(e);
+                continue;
+            }
+            last_printer = printer.clone();
+        }
+
+        match print_to_printer(&app, &job, &printer, cookies.as_deref()).await {
             Ok(()) => printed += 1,
             Err(e) => errors.push(e),
         }
 
-        // نسخة إضافية للفاتورة لو مضبوطة ومختلفة عن العامة
         if job.r#type == "receipt" {
             let extra = settings.extra_printer.trim().to_string();
-            if !extra.is_empty() && extra != printer {
-                match print_to_printer(&app, &job, &extra).await {
-                    Ok(()) => printed += 1,
-                    Err(e) => errors.push(e),
+            if !extra.is_empty() && !extra.eq_ignore_ascii_case(&printer) {
+                if let Err(e) = set_default_printer(&extra) {
+                    errors.push(e);
+                } else {
+                    last_printer = extra.clone();
+                    match print_to_printer(&app, &job, &extra, cookies.as_deref()).await {
+                        Ok(()) => printed += 1,
+                        Err(e) => errors.push(e),
+                    }
                 }
             }
         }
-
-        tokio::time::sleep(Duration::from_millis(400)).await;
     }
 
     if let Some(prev) = previous_default {
@@ -134,57 +154,39 @@ pub async fn run_jobs(app: AppHandle, settings: AgentSettings, req: PrintRequest
     }
 }
 
-async fn print_to_printer(app: &AppHandle, job: &PrintJob, printer: &str) -> Result<(), String> {
-    set_default_printer(printer)?;
-    print_url_once(app, &job.url).await?;
+async fn print_to_printer(
+    app: &AppHandle,
+    job: &PrintJob,
+    printer: &str,
+    cookies: Option<&str>,
+) -> Result<(), String> {
+    let pdf_path = if let Some(html) = job.html.as_ref().map(|s| s.trim()).filter(|s| !s.is_empty())
+    {
+        // المسار الأساسي: HTML جاهز من كودي → PDF 80mm → الطابعة
+        cdp_print::html_to_thermal_pdf(html).await?
+    } else if !job.url.trim().is_empty() {
+        cdp_print::url_to_thermal_pdf(job.url.as_str(), cookies).await?
+    } else {
+        return Err("مهمة الطباعة فاضية (لا html ولا url)".into());
+    };
+
+    let pdf_str = pdf_path
+        .to_str()
+        .ok_or_else(|| "مسار PDF غير صالح".to_string())?
+        .to_string();
+
+    let print_result = print_pdf_to_printer(&pdf_str, printer);
+    let _ = fs::remove_file(&pdf_path);
+    print_result?;
+
     let _ = app.emit(
         "print-progress",
         serde_json::json!({
             "type": job.r#type,
             "printer": printer,
-            "url": job.url,
         }),
     );
-    Ok(())
-}
 
-async fn print_url_once(app: &AppHandle, url: &str) -> Result<(), String> {
-    let label = format!("print-{}", Uuid::new_v4());
-    let parsed = url
-        .parse()
-        .map_err(|e| format!("رابط غير صالح: {e}"))?;
-
-    let win = WebviewWindowBuilder::new(app, &label, WebviewUrl::External(parsed))
-        .title("Kody Print")
-        .inner_size(420.0, 640.0)
-        .visible(false)
-        .skip_taskbar(true)
-        .build()
-        .map_err(|e| format!("تعذر فتح نافذة الطباعة: {e}"))?;
-
-    // انتظار تحميل الصفحة ثم طباعة
-    tokio::time::sleep(Duration::from_millis(1800)).await;
-
-    let script = r#"
-        (function () {
-          try {
-            if (typeof window.print === 'function') {
-              window.print();
-              return 'ok';
-            }
-            return 'no-print';
-          } catch (e) {
-            return String(e);
-          }
-        })()
-    "#;
-
-    let _ = win.eval(script);
-    tokio::time::sleep(Duration::from_millis(2500)).await;
-
-    if let Some(w) = app.get_webview_window(&label) {
-        let _ = w.close();
-    }
-
+    tokio::time::sleep(Duration::from_millis(80)).await;
     Ok(())
 }

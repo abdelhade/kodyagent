@@ -6,6 +6,9 @@ use std::path::PathBuf;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentSettings {
     pub server_url: String,
+    /// اسم قاعدة كودي؛ فاضي = استخدم current من السيرفر عند الاختبار
+    #[serde(default)]
+    pub dbname: String,
     pub main_printer: String,
     pub extra_printer: String,
     /// group_id (as string) -> printer name
@@ -17,6 +20,7 @@ impl Default for AgentSettings {
     fn default() -> Self {
         Self {
             server_url: "http://localhost/kody".into(),
+            dbname: String::new(),
             main_printer: String::new(),
             extra_printer: String::new(),
             group_printers: HashMap::new(),

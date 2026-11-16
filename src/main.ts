@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 
 type AgentSettings = {
   server_url: string;
+  dbname: string;
   main_printer: string;
   extra_printer: string;
   group_printers: Record<string, string>;
@@ -9,15 +10,19 @@ type AgentSettings = {
 };
 
 type GroupItem = { id: number; name: string };
+type DbItem = { name: string; label: string; is_current: boolean };
 
 type TestConnectionResult = {
   ok: boolean;
   message: string;
+  dbname: string;
+  databases: DbItem[];
   groups: GroupItem[];
 };
 
 const el = {
   serverUrl: document.getElementById("serverUrl") as HTMLInputElement,
+  dbname: document.getElementById("dbname") as HTMLSelectElement,
   mainPrinter: document.getElementById("mainPrinter") as HTMLSelectElement,
   extraPrinter: document.getElementById("extraPrinter") as HTMLSelectElement,
   groupsBox: document.getElementById("groupsBox") as HTMLDivElement,
@@ -33,6 +38,7 @@ const el = {
 
 let printers: string[] = [];
 let groups: GroupItem[] = [];
+let databases: DbItem[] = [];
 let groupMap: Record<string, string> = {};
 
 function setMsg(node: HTMLElement, text: string, kind: "" | "ok" | "err" = "") {
@@ -57,6 +63,35 @@ function fillSelect(
     opt.textContent = name;
     if (name === selected) opt.selected = true;
     select.appendChild(opt);
+  }
+}
+
+function fillDatabases(selected: string) {
+  el.dbname.innerHTML = "";
+  if (!databases.length) {
+    const opt = document.createElement("option");
+    opt.value = selected || "";
+    opt.textContent = selected
+      ? selected
+      : "— بعد اختبار الاتصال —";
+    el.dbname.appendChild(opt);
+    return;
+  }
+  for (const d of databases) {
+    const opt = document.createElement("option");
+    opt.value = d.name;
+    opt.textContent = d.is_current
+      ? `${d.label} (النشطة الآن)`
+      : d.label || d.name;
+    if (d.name === selected) opt.selected = true;
+    el.dbname.appendChild(opt);
+  }
+  if (selected && !databases.some((d) => d.name === selected)) {
+    const opt = document.createElement("option");
+    opt.value = selected;
+    opt.textContent = selected;
+    opt.selected = true;
+    el.dbname.appendChild(opt);
   }
 }
 
@@ -95,6 +130,22 @@ async function loadPrinters() {
   printers = await invoke<string[]>("list_printers");
 }
 
+async function runTest(preferredDb?: string) {
+  setMsg(el.connMsg, "جاري الاختبار...", "");
+  const res = await invoke<TestConnectionResult>("test_connection", {
+    serverUrl: el.serverUrl.value,
+    dbname: preferredDb ?? el.dbname.value ?? "",
+  });
+  setMsg(el.connMsg, res.message, res.ok ? "ok" : "err");
+  if (!res.ok) return res;
+
+  databases = res.databases || [];
+  groups = res.groups || [];
+  fillDatabases(res.dbname || preferredDb || "");
+  renderGroups();
+  return res;
+}
+
 async function bootstrap() {
   const settings = await invoke<AgentSettings>("get_settings");
   const endpoint = await invoke<string>("agent_endpoint");
@@ -111,21 +162,15 @@ async function bootstrap() {
     "— بدون طابعة إضافية —",
   );
 
-  // لو فيه سيرفر محفوظ نحاول نجيب المجموعات بهدوء
   if (settings.server_url.trim()) {
     try {
-      const res = await invoke<TestConnectionResult>("test_connection", {
-        serverUrl: settings.server_url,
-      });
-      if (res.ok) {
-        groups = res.groups || [];
-        setMsg(el.connMsg, res.message, "ok");
-      } else {
-        setMsg(el.connMsg, res.message, "err");
-      }
+      await runTest(settings.dbname || "");
     } catch {
+      fillDatabases(settings.dbname || "");
       setMsg(el.connMsg, "تعذر التحقق من الاتصال المحفوظ", "err");
     }
+  } else {
+    fillDatabases(settings.dbname || "");
   }
 
   renderGroups();
@@ -148,23 +193,24 @@ el.btnRefreshPrinters.addEventListener("click", async () => {
 });
 
 el.btnTest.addEventListener("click", async () => {
-  setMsg(el.connMsg, "جاري الاختبار...", "");
   try {
-    const res = await invoke<TestConnectionResult>("test_connection", {
-      serverUrl: el.serverUrl.value,
-    });
-    setMsg(el.connMsg, res.message, res.ok ? "ok" : "err");
-    if (res.ok) {
-      groups = res.groups || [];
-      renderGroups();
-    }
+    // اختبار بدون إجبار db أولاً عشان نعرف النشطة من السيرفر لو القائمة فاضية
+    await runTest(el.dbname.value || "");
+  } catch (e) {
+    setMsg(el.connMsg, String(e), "err");
+  }
+});
+
+el.dbname.addEventListener("change", async () => {
+  if (!el.serverUrl.value.trim() || !el.dbname.value) return;
+  try {
+    await runTest(el.dbname.value);
   } catch (e) {
     setMsg(el.connMsg, String(e), "err");
   }
 });
 
 el.btnSave.addEventListener("click", async () => {
-  // التقاط اختيارات المجموعات الحالية من الـ DOM
   el.groupsBox.querySelectorAll("select[data-group-id]").forEach((node) => {
     const select = node as HTMLSelectElement;
     const id = select.dataset.groupId!;
@@ -174,6 +220,7 @@ el.btnSave.addEventListener("click", async () => {
 
   const payload: AgentSettings = {
     server_url: el.serverUrl.value.trim().replace(/\/+$/, ""),
+    dbname: el.dbname.value.trim(),
     main_printer: el.mainPrinter.value,
     extra_printer: el.extraPrinter.value,
     group_printers: groupMap,
@@ -182,7 +229,13 @@ el.btnSave.addEventListener("click", async () => {
 
   try {
     await invoke("save_settings", { settings: payload });
-    setMsg(el.saveMsg, "تم الحفظ", "ok");
+    setMsg(
+      el.saveMsg,
+      payload.dbname
+        ? `تم الحفظ — القاعدة: ${payload.dbname}`
+        : "تم الحفظ",
+      "ok",
+    );
   } catch (e) {
     setMsg(el.saveMsg, String(e), "err");
   }
